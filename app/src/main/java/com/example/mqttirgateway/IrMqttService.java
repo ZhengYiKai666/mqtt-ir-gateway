@@ -9,7 +9,6 @@ import android.content.Intent;
 import android.hardware.ConsumerIrManager;
 import android.os.Build;
 import android.os.IBinder;
-import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
@@ -44,42 +43,45 @@ public class IrMqttService extends Service {
     }
 
     private void connectMqtt(String brokerUrl) {
-        new Thread(() -> {
-            try {
-                mqttClient = new MqttClient(brokerUrl, "AndroidIRGateway", new MemoryPersistence());
-                MqttConnectOptions options = new MqttConnectOptions();
-                options.setAutomaticReconnect(true);
-                options.setCleanSession(false);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    mqttClient = new MqttClient(brokerUrl, "AndroidIRGateway", new MemoryPersistence());
+                    MqttConnectOptions options = new MqttConnectOptions();
+                    options.setAutomaticReconnect(true);
+                    options.setCleanSession(false);
 
-                mqttClient.setCallback(new MqttCallback() {
-                    @Override
-                    public void connectionLost(Throwable cause) {}
+                    mqttClient.setCallback(new MqttCallback() {
+                        @Override
+                        public void connectionLost(Throwable cause) {}
 
-                    @Override
-                    public void messageArrived(String topic, MqttMessage message) throws Exception {
-                        String payload = new String(message.getPayload());
-                        JSONObject json = new JSONObject(payload);
-                        int freq = json.getInt("freq");
-                        JSONArray patternArray = json.getJSONArray("pattern");
-                        
-                        int[] pattern = new int[patternArray.length()];
-                        for (int i = 0; i < patternArray.length(); i++) {
-                            pattern[i] = patternArray.getInt(i);
+                        @Override
+                        public void messageArrived(String topic, MqttMessage message) throws Exception {
+                            String payload = new String(message.getPayload());
+                            JSONObject json = new JSONObject(payload);
+                            int freq = json.getInt("freq");
+                            JSONArray patternArray = json.getJSONArray("pattern");
+                            
+                            int[] pattern = new int[patternArray.length()];
+                            for (int i = 0; i < patternArray.length(); i++) {
+                                pattern[i] = patternArray.getInt(i);
+                            }
+
+                            if (irManager != null && irManager.hasIrEmitter()) {
+                                irManager.transmit(freq, pattern);
+                            }
                         }
 
-                        if (irManager != null && irManager.hasIrEmitter()) {
-                            irManager.transmit(freq, pattern);
-                        }
-                    }
+                        @Override
+                        public void deliveryComplete(IMqttDeliveryToken token) {}
+                    });
 
-                    @Override
-                    public void deliveryComplete(IMqttDeliveryToken token) {}
-                });
-
-                mqttClient.connect(options);
-                mqttClient.subscribe("home/ir/cmd", 1);
-            } catch (Exception e) {
-                e.printStackTrace();
+                    mqttClient.connect(options);
+                    mqttClient.subscribe("home/ir/cmd", 1);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }).start();
     }
