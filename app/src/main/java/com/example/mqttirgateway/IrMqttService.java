@@ -23,8 +23,21 @@ import org.json.JSONObject;
 
 public class IrMqttService extends Service {
     private static final String CHANNEL_ID = "IrMqttChannel";
+
+    // App 内广播：把后台服务的日志实时回显到界面
+    public static final String ACTION_LOG = "com.example.mqttirgateway.ACTION_LOG";
+    public static final String EXTRA_LOG = "log";
+
     private MqttClient mqttClient;
     private ConsumerIrManager irManager;
+
+    // 发送一条日志广播（仅限本 App 内部）
+    private void sendLog(String msg) {
+        Intent intent = new Intent(ACTION_LOG);
+        intent.setPackage(getPackageName());
+        intent.putExtra(EXTRA_LOG, msg);
+        sendBroadcast(intent);
+    }
 
     @Override
     public void onCreate() {
@@ -54,22 +67,43 @@ public class IrMqttService extends Service {
 
                     mqttClient.setCallback(new MqttCallback() {
                         @Override
-                        public void connectionLost(Throwable cause) {}
+                        public void connectionLost(Throwable cause) {
+                            sendLog("⚠️ MQTT 连接断开" + (cause != null ? "：" + cause.getMessage() : "") + "（将自动重连）");
+                        }
 
                         @Override
-                        public void messageArrived(String topic, MqttMessage message) throws Exception {
+                        public void messageArrived(String topic, MqttMessage message) {
                             String payload = new String(message.getPayload());
-                            JSONObject json = new JSONObject(payload);
-                            int freq = json.getInt("freq");
-                            JSONArray patternArray = json.getJSONArray("pattern");
-                            
-                            int[] pattern = new int[patternArray.length()];
-                            for (int i = 0; i < patternArray.length(); i++) {
-                                pattern[i] = patternArray.getInt(i);
-                            }
+                            sendLog("📩 收到消息: " + payload);
+                            try {
+                                JSONObject json = new JSONObject(payload);
+                                int freq = json.optInt("freq", 38000);
+                                JSONArray patternArray = json.getJSONArray("pattern");
 
-                            if (irManager != null && irManager.hasIrEmitter()) {
-                                irManager.transmit(freq, pattern);
+                                int[] pattern = new int[patternArray.length()];
+                                for (int i = 0; i < patternArray.length(); i++) {
+                                    pattern[i] = patternArray.getInt(i);
+                                }
+
+                                // 小米/红米机型的 transmit 需要“周期数(cycles)”而非“微秒(us)”，做单位换算
+                                int[] finalPattern = pattern;
+                                String manufacturer = Build.MANUFACTURER.toLowerCase();
+                                if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi")) {
+                                    finalPattern = new int[pattern.length];
+                                    for (int i = 0; i < pattern.length; i++) {
+                                        finalPattern[i] = (int) ((long) pattern[i] * freq / 1000000L);
+                                    }
+                                    sendLog("🔄 触发小米 Cycles 模式转换");
+                                }
+
+                                if (irManager != null && irManager.hasIrEmitter()) {
+                                    irManager.transmit(freq, finalPattern);
+                                    sendLog("🚀 红外已发射 (freq=" + freq + ", " + finalPattern.length + " 段)");
+                                } else {
+                                    sendLog("❌ 此设备无红外发射头，跳过发射");
+                                }
+                            } catch (Exception e) {
+                                sendLog("❌ 解析/发射失败: " + e.getMessage());
                             }
                         }
 
@@ -77,9 +111,12 @@ public class IrMqttService extends Service {
                         public void deliveryComplete(IMqttDeliveryToken token) {}
                     });
 
+                    sendLog("⏳ 正在连接 MQTT: " + brokerUrl);
                     mqttClient.connect(options);
                     mqttClient.subscribe("home/ir/cmd", 1);
+                    sendLog("✅ MQTT 连接成功，已订阅 home/ir/cmd");
                 } catch (Exception e) {
+                    sendLog("❌ MQTT 连接失败: " + e.getMessage());
                     e.printStackTrace();
                 }
             }

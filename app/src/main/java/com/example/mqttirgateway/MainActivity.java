@@ -1,6 +1,10 @@
-package com.example.irgateway; // ⚠️ 修改为你的实际包名
+package com.example.mqttirgateway;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.hardware.ConsumerIrManager;
 import android.os.Build;
@@ -15,16 +19,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
-import org.eclipse.paho.client.mqttv3.MqttCallback;
-import org.eclipse.paho.client.mqttv3.MqttClient;
-import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
-import org.eclipse.paho.client.mqttv3.MqttException;
-import org.eclipse.paho.client.mqttv3.MqttMessage;
-import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
+import androidx.core.content.ContextCompat;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -36,7 +31,16 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatus, tvLog;
 
     private ConsumerIrManager irManager;
-    private MqttClient mqttClient;
+
+    // 接收来自 IrMqttService 的日志广播，回显到界面日志区
+    private final BroadcastReceiver logReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && IrMqttService.ACTION_LOG.equals(intent.getAction())) {
+                appendLog(intent.getStringExtra(IrMqttService.EXTRA_LOG));
+            }
+        }
+    };
 
     // 美的空调测试脉冲基准 (微秒 us)
     private final int[] mideaTestPatternUs = new int[]{
@@ -56,6 +60,13 @@ public class MainActivity extends AppCompatActivity {
         // 1. 动态用代码构建界面（无需任何 xml）
         initDynamicUI();
 
+        // Android 13+ 需要运行时申请通知权限，否则前台服务的常驻通知会被系统隐藏
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+
         // 2. 初始化系统红外服务
         irManager = (ConsumerIrManager) getSystemService(Context.CONSUMER_IR_SERVICE);
 
@@ -74,7 +85,7 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "请输入 MQTT 服务器 IP", Toast.LENGTH_SHORT).show();
                 return;
             }
-            connectMqtt(ip);
+            startGateway(ip);
         });
 
         // 🧪 测试模式 1：原生微秒模式
@@ -106,6 +117,21 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("⚠️ 无法获取硬件频率列表");
             }
         });
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        // 注册服务日志广播接收器（NOT_EXPORTED：仅本 App 内部可见）
+        ContextCompat.registerReceiver(this, logReceiver,
+                new IntentFilter(IrMqttService.ACTION_LOG),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        unregisterReceiver(logReceiver);
     }
 
     // 用 Java 代码画出 UI 布局
@@ -197,82 +223,19 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void connectMqtt(String brokerIp) {
-        String serverUri = "tcp://" + brokerIp + ":1883";
-        String clientId = "Android_IR_Gateway_" + System.currentTimeMillis();
+    // 启动后台前台服务，把 MQTT 监听 + 红外发射交给 IrMqttService 长期运行
+    private void startGateway(String brokerIp) {
+        Intent intent = new Intent(this, IrMqttService.class);
+        intent.putExtra("broker_ip", brokerIp);
 
-        try {
-            if (mqttClient != null && mqttClient.isConnected()) {
-                mqttClient.disconnect();
-            }
-
-            mqttClient = new MqttClient(serverUri, clientId, new MemoryPersistence());
-            MqttConnectOptions options = new MqttConnectOptions();
-            options.setCleanSession(true);
-            options.setAutomaticReconnect(true);
-
-            mqttClient.setCallback(new MqttCallback() {
-                @Override
-                public void connectionLost(Throwable cause) {
-                    appendLog("⚠️ MQTT 连接断开！");
-                }
-
-                @Override
-                public void messageArrived(String topic, MqttMessage message) {
-                    String payload = new String(message.getPayload());
-                    appendLog("📩 收到 MQTT 消息: " + payload);
-                    handleIrCommand(payload);
-                }
-
-                @Override
-                public void deliveryComplete(IMqttDeliveryToken token) {}
-            });
-
-            appendLog("⏳ 正在连接 MQTT: " + serverUri);
-            new Thread(() -> {
-                try {
-                    mqttClient.connect(options);
-                    mqttClient.subscribe(MQTT_TOPIC, 0);
-                    runOnUiThread(() -> tvStatus.setText("状态：✅ 已连接 " + MQTT_TOPIC));
-                    appendLog("✅ MQTT 连接成功！");
-                } catch (MqttException e) {
-                    appendLog("❌ MQTT 连接失败: " + e.getMessage());
-                }
-            }).start();
-
-        } catch (Exception e) {
-            appendLog("❌ 初始化 MQTT 错误: " + e.getMessage());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
         }
-    }
 
-    private void handleIrCommand(String jsonStr) {
-        try {
-            JSONObject json = new JSONObject(jsonStr);
-            int frequency = json.optInt("freq", 38000);
-            JSONArray patternArray = json.getJSONArray("pattern");
-
-            int[] pattern = new int[patternArray.length()];
-            for (int i = 0; i < patternArray.length(); i++) {
-                pattern[i] = patternArray.getInt(i);
-            }
-
-            int[] finalPattern;
-            String manufacturer = Build.MANUFACTURER.toLowerCase();
-            if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi")) {
-                finalPattern = new int[pattern.length];
-                for (int i = 0; i < pattern.length; i++) {
-                    finalPattern[i] = (int) ((long) pattern[i] * frequency / 1000000L);
-                }
-                appendLog("🔄 触发小米 Cycles 模式转换");
-            } else {
-                finalPattern = pattern;
-            }
-
-            irManager.transmit(frequency, finalPattern);
-            appendLog("🚀 红外命令发射成功！");
-
-        } catch (Exception e) {
-            appendLog("❌ 解析 JSON 错误: " + e.getMessage());
-        }
+        tvStatus.setText("状态：✅ 网关服务已启动（后台监听 " + MQTT_TOPIC + "）");
+        appendLog("🚀 已启动后台前台服务，broker=" + brokerIp);
+        appendLog("ℹ️ 现在可退到后台，App 仍会持续接收 MQTT 指令并发射红外。");
     }
 }
