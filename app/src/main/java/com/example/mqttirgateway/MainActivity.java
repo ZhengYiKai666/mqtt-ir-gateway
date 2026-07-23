@@ -1,12 +1,16 @@
 package com.example.irgateway; // ⚠️ 修改为你的实际包名
 
 import android.content.Context;
+import android.graphics.Color;
 import android.hardware.ConsumerIrManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -48,27 +52,22 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
 
-        etBrokerIp = findViewById(R.id.etBrokerIp);
-        btnStart = findViewById(R.id.btnStart);
-        btnTestUs = findViewById(R.id.btnTestUs);
-        btnTestCycles = findViewById(R.id.btnTestCycles);
-        btnTestFreq = findViewById(R.id.btnTestFreq);
-        tvStatus = findViewById(R.id.tvStatus);
-        tvLog = findViewById(R.id.tvLog);
+        // 1. 动态用代码构建界面（无需任何 xml）
+        initDynamicUI();
 
+        // 2. 初始化系统红外服务
         irManager = (ConsumerIrManager) getSystemService(Context.CONSUMER_IR_SERVICE);
 
         if (irManager == null || !irManager.hasIrEmitter()) {
-            appendLog("❌ 警告：此手机不支持红外功能或无红外发射器！");
+            appendLog("❌ 警告：此手机不支持红外功能或未找到红外发射头！");
             btnStart.setEnabled(false);
             return;
         } else {
-            appendLog("✅ 检测到红外硬件，手机品牌: " + Build.MANUFACTURER + " " + Build.MODEL);
+            appendLog("✅ 硬件正常，识别手机品牌: " + Build.MANUFACTURER + " " + Build.MODEL);
         }
 
-        // MQTT 连接按钮
+        // 3. 绑定按键逻辑
         btnStart.setOnClickListener(v -> {
             String ip = etBrokerIp.getText().toString().trim();
             if (ip.isEmpty()) {
@@ -78,15 +77,15 @@ public class MainActivity extends AppCompatActivity {
             connectMqtt(ip);
         });
 
-        // 🧪 测试功能 1：原生微秒模式发射
+        // 🧪 测试模式 1：原生微秒模式
         btnTestUs.setOnClickListener(v -> {
-            appendLog("🧪 手动测试 [微秒模式] 发射中...");
+            appendLog("🧪 手动测试 [1.微秒模式] 发射中...");
             transmitDirect(38000, mideaTestPatternUs);
         });
 
-        // 🧪 测试功能 2：小米周期数 (Cycles) 模式发射
+        // 🧪 测试模式 2：小米 Cycles 周期数模式
         btnTestCycles.setOnClickListener(v -> {
-            appendLog("🧪 手动测试 [小米 Cycles 模式] 发射中...");
+            appendLog("🧪 手动测试 [2.Cycles 周期数模式] 发射中...");
             int[] cyclesPattern = new int[mideaTestPatternUs.length];
             for (int i = 0; i < mideaTestPatternUs.length; i++) {
                 cyclesPattern[i] = (int) ((long) mideaTestPatternUs[i] * 38000 / 1000000L);
@@ -94,27 +93,100 @@ public class MainActivity extends AppCompatActivity {
             transmitDirect(38000, cyclesPattern);
         });
 
-        // 🧪 测试功能 3：查询手机支持的红外频率范围
+        // 🧪 测试模式 3：检测支持频率
         btnTestFreq.setOnClickListener(v -> {
             ConsumerIrManager.CarrierFrequencyRange[] ranges = irManager.getCarrierFrequencies();
             if (ranges != null && ranges.length > 0) {
-                StringBuilder sb = new StringBuilder("📡 硬件支持频率范围:\n");
+                StringBuilder sb = new StringBuilder("📡 硬件支持的频率区间:\n");
                 for (ConsumerIrManager.CarrierFrequencyRange r : ranges) {
                     sb.append("  - ").append(r.getMinFrequency()).append(" Hz ~ ").append(r.getMaxFrequency()).append(" Hz\n");
                 }
                 appendLog(sb.toString());
             } else {
-                appendLog("⚠️ 无法获取硬件频率列表（可能驱动受限）");
+                appendLog("⚠️ 无法获取硬件频率列表");
             }
         });
+    }
+
+    // 用 Java 代码画出 UI 布局
+    private void initDynamicUI() {
+        LinearLayout mainLayout = new LinearLayout(this);
+        mainLayout.setOrientation(LinearLayout.VERTICAL);
+        mainLayout.setPadding(40, 40, 40, 40);
+
+        TextView tvTitle = new TextView(this);
+        tvTitle.setText("MQTT 红外网关（现场测试诊断版）");
+        tvTitle.setTextSize(18);
+        tvTitle.setTextColor(Color.BLACK);
+        mainLayout.addView(tvTitle);
+
+        etBrokerIp = new EditText(this);
+        etBrokerIp.setHint("MQTT IP (例 192.168.0.100)");
+        mainLayout.addView(etBrokerIp);
+
+        btnStart = new Button(this);
+        btnStart.setText("启动红外监听网关");
+        mainLayout.addView(btnStart);
+
+        tvStatus = new TextView(this);
+        tvStatus.setText("状态：未连接");
+        tvStatus.setTextColor(Color.DKGRAY);
+        tvStatus.setPadding(0, 10, 0, 20);
+        mainLayout.addView(tvStatus);
+
+        TextView tvToolTitle = new TextView(this);
+        tvToolTitle.setText("🛠️ 红外现场诊断测试（对准空调直接按）：");
+        tvToolTitle.setTextColor(Color.BLACK);
+        mainLayout.addView(tvToolTitle);
+
+        LinearLayout btnGroup = new LinearLayout(this);
+        btnGroup.setOrientation(LinearLayout.HORIZONTAL);
+
+        btnTestUs = new Button(this);
+        btnTestUs.setText("1.微秒");
+        LinearLayout.LayoutParams p1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        btnGroup.addView(btnTestUs, p1);
+
+        btnTestCycles = new Button(this);
+        btnTestCycles.setText("2.Cycles");
+        LinearLayout.LayoutParams p2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        btnGroup.addView(btnTestCycles, p2);
+
+        btnTestFreq = new Button(this);
+        btnTestFreq.setText("检查频率");
+        LinearLayout.LayoutParams p3 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        btnGroup.addView(btnTestFreq, p3);
+
+        mainLayout.addView(btnGroup);
+
+        TextView tvLogLabel = new TextView(this);
+        tvLogLabel.setText("📋 运行日志：");
+        tvLogLabel.setPadding(0, 20, 0, 10);
+        mainLayout.addView(tvLogLabel);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(Color.parseColor("#1E1E1E"));
+        scrollView.setPadding(20, 20, 20, 20);
+
+        tvLog = new TextView(this);
+        tvLog.setText("等待操作...");
+        tvLog.setTextColor(Color.GREEN);
+        tvLog.setTextSize(12);
+
+        scrollView.addView(tvLog);
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1);
+        mainLayout.addView(scrollView, scrollParams);
+
+        setContentView(mainLayout);
     }
 
     private void transmitDirect(int freq, int[] pattern) {
         try {
             irManager.transmit(freq, pattern);
-            appendLog("⚡ 发射函数 transmit() 调用成功！");
+            appendLog("⚡ transmit() 发射指令已下发！");
         } catch (Exception e) {
-            appendLog("❌ 发射失败 (异常): " + e.getMessage());
+            appendLog("❌ 发射失败: " + e.getMessage());
         }
     }
 
@@ -142,7 +214,7 @@ public class MainActivity extends AppCompatActivity {
             mqttClient.setCallback(new MqttCallback() {
                 @Override
                 public void connectionLost(Throwable cause) {
-                    appendLog("⚠️ MQTT 连接已断开！");
+                    appendLog("⚠️ MQTT 连接断开！");
                 }
 
                 @Override
@@ -184,7 +256,6 @@ public class MainActivity extends AppCompatActivity {
                 pattern[i] = patternArray.getInt(i);
             }
 
-            // 自动判断小米/华为品牌转换
             int[] finalPattern;
             String manufacturer = Build.MANUFACTURER.toLowerCase();
             if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi")) {
@@ -192,7 +263,7 @@ public class MainActivity extends AppCompatActivity {
                 for (int i = 0; i < pattern.length; i++) {
                     finalPattern[i] = (int) ((long) pattern[i] * frequency / 1000000L);
                 }
-                appendLog("🔄 已触发小米 Cycles 驱动修正");
+                appendLog("🔄 触发小米 Cycles 模式转换");
             } else {
                 finalPattern = pattern;
             }
@@ -201,7 +272,7 @@ public class MainActivity extends AppCompatActivity {
             appendLog("🚀 红外命令发射成功！");
 
         } catch (Exception e) {
-            appendLog("❌ 解析红外 JSON 异常: " + e.getMessage());
+            appendLog("❌ 解析 JSON 错误: " + e.getMessage());
         }
     }
 }
